@@ -3,11 +3,19 @@ import rpc_pb2_grpc as lnrpc
 import grpc
 import os
 import codecs
+import sqlite3
+import time
+import threading
 
-ip = 'localhost' #ip of the server where lnd is running
-port = '10009' #grpc port
-admin_macaroon_path = '~/.lnd/admin.macaroon' #path to the downloaded admin.macaroon
-tls_cert_path = '~/.lnd/tls.cert' #path to the downloaded tls certificate
+import cryptoprices
+import config
+
+config = config.Config()
+
+ip = config.GRPC_IP #ip of the server where lnd is running
+port = config.GRPC_PORT #grpc port
+admin_macaroon_path = config.GRPC_ADMIN_MACAROON_PATH #path to the downloaded admin.macaroon
+tls_cert_path = config.GRPC_TLS_CERT_PATH #path to the downloaded tls certificate
 
 def metadata_callback(context, callback):
     # for more info see grpc docs
@@ -73,5 +81,95 @@ class gRPC_Connection:
     def NetworkCapacity(self):
         capacity = stub.GetNetworkInfo(ln.NetworkInfoRequest()).total_network_capacity
         return capacity
-    
 
+class LND_Database(threading.Thread):
+    
+    def __init__(self, connection, sleep):
+        super(LND_Database, self).__init__()  
+        self.connection = connection
+        self.sleep = sleep
+        
+    def run(self):
+        self.start_saving(self.sleep)    
+        
+    def get_subscribers(self):
+        conn = sqlite3.connect(config.SQLITEDB_PATH)   
+        c = conn.cursor()
+        c.execute('SELECT chat_id FROM subscribers')
+        subscribers_db = c.fetchall()
+        c.close()
+        
+        subscribers = []
+        for subscriber in subscribers_db:
+           subscribers.append(subscriber[0]) 
+        
+        return subscribers
+    
+    def add_subscriber(self, chat_id):
+        conn = sqlite3.connect(config.SQLITEDB_PATH)
+        c = conn.cursor()
+        c.execute('INSERT INTO subscribers (chat_id) VALUES(?)', (chat_id,))
+        c.close()
+        conn.commit()
+        
+    def remove_subscriber(self, chat_id):
+        conn = sqlite3.connect(config.SQLITEDB_PATH)
+        c = conn.cursor()
+        c.execute('DELETE FROM subscribers WHERE chat_id = ?', (chat_id,))
+        c.close()
+        conn.commit()
+        
+    def insert_statistics(self, num_nodes, capacity_ltc, capacity_usd, price, num_channels):  
+        conn = sqlite3.connect(config.SQLITEDB_PATH)             
+        c = conn.cursor()
+        c.execute('INSERT INTO statistics (num_nodes, capacity_ltc, capacity_usd, price, num_channels) VALUES (?, ?, ?, ? , ?)', (num_nodes, capacity_ltc, capacity_usd, price, num_channels))
+        c.close()
+        conn.commit()
+        
+    def get_latest_statistics(self):
+        conn = sqlite3.connect(config.SQLITEDB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT num_nodes, capacity_ltc, capacity_usd, price, num_channels FROM statistics WHERE id = (SELECT MAX(id) FROM statistics)')
+        
+        response = c.fetchall()   
+        c.close()
+              
+        return response
+        
+    def start_saving(self, sleep=300):
+        price_puller = cryptoprices.CoinbasePricePuller()
+        
+        while True:        
+            network = self.connection.NetworkInfo()
+            ltc_price = price_puller.get_price('LTC', 'USD')
+            
+            num_nodes = network.num_nodes
+            capacity_ltc = float(network.total_network_capacity * 1e-8)
+            capacity_usd = capacity_ltc * float(ltc_price)
+            price = ltc_price
+            num_channels = network.num_channels
+            
+            self.insert_statistics(num_nodes, capacity_ltc, capacity_usd, price, num_channels)
+            
+            time.sleep(sleep)
+            
+    def send_update(self, bot, job):
+        subscribers = self.get_subscribers()
+        
+        statistics = self.get_latest_statistics()[0]
+        num_nodes = statistics[0]
+        capacity_ltc = statistics[1]
+        capacity_usd = "{:,}".format(round(statistics[2],2))
+        price = statistics[3]
+        num_channels = statistics[4]
+        
+        message = '''
+Number of nodes: {0}
+Capacity: {1} LTC ({2} USD)
+Number of channels: {3}
+'''.format(num_nodes, capacity_ltc, capacity_usd, num_channels)
+            
+        for subscriber in subscribers:
+            bot.send_message(chat_id=subscriber, text=message)
+        
+        

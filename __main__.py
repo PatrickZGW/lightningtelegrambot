@@ -9,6 +9,7 @@ import datetime
 
 import lnd
 import cryptoprices
+from chart import *
 import config
 from _sqlite3 import IntegrityError
 
@@ -49,6 +50,8 @@ def help(bot, update):
 
 /subscribe - Get a daily summary of the network statistics
 /unsubscribe - Unsubscribe from daily updates
+
+/chart - Displays chart of the development of key network metrics
 '''
     update.message.reply_text(help_text)
     
@@ -108,8 +111,17 @@ def unsubscribe(bot, update):
     except IntegrityError:
         update.message.reply_text('You were already not a subscriber')
         
+def chart(bot, update):
+    try:
+        fig = create_chart()
+    except:
+        update.message.reply_text('Chart could not be created')
+
+    filepath = '/home/pi/lndbot/charts/lnd_chart.png'
+    fig.savefig(fname=filepath, dpi=300, bbox_inches='tight')
     
-    
+    bot.send_photo(chat_id=update.message.chat_id, photo=open(filepath, 'rb'))
+        
    
 start_handler = CommandHandler('start', start)
 help_handler = CommandHandler('help', help)
@@ -123,6 +135,7 @@ networkcapacity_handler = CommandHandler('capacity', networkcapacity)
 num_nodes_handler = CommandHandler('nodes', num_nodes)
 subscribe_handler = CommandHandler('subscribe', subscribe)
 unsubscribe_handler = CommandHandler('unsubscribe', unsubscribe)
+chart_handler = CommandHandler('chart', chart)
     
 dispatcher.add_handler(start_handler)
 dispatcher.add_handler(help_handler)
@@ -136,8 +149,9 @@ dispatcher.add_handler(networkcapacity_handler)
 dispatcher.add_handler(num_nodes_handler)
 dispatcher.add_handler(subscribe_handler)
 dispatcher.add_handler(unsubscribe_handler)
+dispatcher.add_handler(chart_handler)
 
-job_queue.run_daily(db_connection.send_update, datetime.time(hour=18, minute=5, second=0))
+job_queue.run_daily(db_connection.send_update, datetime.time(hour=18, minute=0, second=0))
 job_queue.start()
 
 updater.start_polling()
